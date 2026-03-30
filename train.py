@@ -348,8 +348,8 @@ class VLSAM(nn.Module):
         blip_img = image_features.view(B, -1, 256)
         
         # blip_img_adap = image_features.view(1,-1,64,64)
-        image_embedding = self.image_encoder(image,blip_img_adap)  # (B, 256, 64, 64)
-      
+        # image_embedding = self.image_encoder(image,blip_img_adap)  # (B, 256, 64, 64)
+        image_embedding = self.image_encoder(image)
         # mamba_text = text_embeddings.view(1,-1,256)
         # blip_img = image_features.view(1,-1,256)
         sparse_embeddings = torch.cat((mamba_text,blip_img),dim=1)
