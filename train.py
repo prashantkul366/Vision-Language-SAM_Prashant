@@ -157,45 +157,80 @@ def show_box(box, ax):
     )
 
 
-class NpyDataset(Dataset):
-    def __init__(self, data_root, bbox_shift=20):
-        self.data_root = data_root
-        self.gt_path = join(data_root, "GT/")
-        self.img_path = join(data_root, "Imgs/")
-        self.gt_path_files = sorted([self.gt_path + f for f in os.listdir(self.gt_path) if f.endswith('.png')])
-        self.img_path_files = sorted([self.img_path + f for f in os.listdir(self.img_path) if f.endswith('.jpg')])
-        self.bbox_shift = bbox_shift
-        print(f"number of images: {len(self.gt_path_files)}")
+# class NpyDataset(Dataset):
+#     def __init__(self, data_root, bbox_shift=20):
+#         self.data_root = data_root
+#         self.gt_path = join(data_root, "GT/")
+#         self.img_path = join(data_root, "Imgs/")
+#         self.gt_path_files = sorted([self.gt_path + f for f in os.listdir(self.gt_path) if f.endswith('.png')])
+#         self.img_path_files = sorted([self.img_path + f for f in os.listdir(self.img_path) if f.endswith('.jpg')])
+#         self.bbox_shift = bbox_shift
+#         print(f"number of images: {len(self.gt_path_files)}")
         
-        self.img_transform = transforms.Compose([
-                transforms.Resize((1024, 1024)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-            ])
-        self.mask_transform = transforms.Compose([
-                transforms.Resize((1024, 1024), interpolation=Image.NEAREST),
-                transforms.ToTensor(),
-            ])
+#         self.img_transform = transforms.Compose([
+#                 transforms.Resize((1024, 1024)),
+#                 transforms.ToTensor(),
+#                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
+#                                      std=[0.229, 0.224, 0.225])
+#             ])
+#         self.mask_transform = transforms.Compose([
+#                 transforms.Resize((1024, 1024), interpolation=Image.NEAREST),
+#                 transforms.ToTensor(),
+#             ])
+
+#     def __len__(self):
+#         return len(self.gt_path_files)
+
+#     def __getitem__(self, index):
+       
+#         img_1024_ori = Image.open(self.img_path_files[index]).convert('RGB')
+        
+#         gt = Image.open(self.gt_path_files[index]).convert('L')  # multiple labels [0, 1,4,5...], (256,256)
+        
+#         img_1024 = self.img_transform(img_1024_ori)
+#         gt = self.mask_transform(gt)
+
+#         return (
+#             torch.tensor(img_1024).float(),
+#             torch.tensor(gt).long(),
+#             np.array(img_1024_ori)
+#         )
+
+class NpyDataset(Dataset):
+    def __init__(self, data_root):
+        self.img_path = join(data_root, "images")
+        self.gt_path = join(data_root, "masks")
+
+        self.img_files = sorted([join(self.img_path, f) for f in os.listdir(self.img_path) if f.endswith('.npy')])
+        self.gt_files = sorted([join(self.gt_path, f) for f in os.listdir(self.gt_path) if f.endswith('.npy')])
+
+        print(f"Number of samples: {len(self.img_files)}")
 
     def __len__(self):
-        return len(self.gt_path_files)
+        return len(self.img_files)
 
     def __getitem__(self, index):
-       
-        img_1024_ori = Image.open(self.img_path_files[index]).convert('RGB')
-        
-        gt = Image.open(self.gt_path_files[index]).convert('L')  # multiple labels [0, 1,4,5...], (256,256)
-        
-        img_1024 = self.img_transform(img_1024_ori)
-        gt = self.mask_transform(gt)
 
-        return (
-            torch.tensor(img_1024).float(),
-            torch.tensor(gt).long(),
-            np.array(img_1024_ori)
-        )
+        # ✅ LOAD 4-CHANNEL IMAGE
+        img = np.load(self.img_files[index])   # (H, W, 4)
+        gt = np.load(self.gt_files[index])     # (H, W)
 
+        # ✅ NORMALIZE (IMPORTANT)
+        img = img.astype(np.float32)
+        img = (img - img.min()) / (img.max() - img.min() + 1e-6)
+
+        # ✅ TO TENSOR
+        img = torch.tensor(img).permute(2, 0, 1)   # (4, H, W)
+        gt = torch.tensor(gt).unsqueeze(0).float() # (1, H, W)
+
+        # ✅ RESIZE to SAM input
+        img = F.interpolate(img.unsqueeze(0), size=(1024,1024), mode='bilinear').squeeze(0)
+        gt = F.interpolate(gt.unsqueeze(0), size=(1024,1024), mode='nearest').squeeze(0)
+
+        # ✅ CREATE RGB VERSION FOR BLIP
+        img_rgb = img[:3]   # first 3 channels only
+
+        return img, gt, img_rgb
 # %% set up parser
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -206,9 +241,15 @@ parser.add_argument(
     help="path to training npy files; two subfolders: gts and imgs",
 )
 parser.add_argument("-task_name", type=str, default="....")
-parser.add_argument("-model_type", type=str, default="vit_h")
+# parser.add_argument("-model_type", type=str, default="vit_h")
+parser.add_argument("-model_type", type=str, default="vit_b")
+# parser.add_argument(
+#     "-checkpoint", type=str, default="work_dir/SAM/sam_vit_h_4b8939.pth"
+# )
 parser.add_argument(
-    "-checkpoint", type=str, default="work_dir/SAM/sam_vit_h_4b8939.pth"
+    "-checkpoint",
+    type=str,
+    default="/content/drive/MyDrive/Prashant/Pretrain/sam_vit_b_01ec64.pth"
 )
 # parser.add_argument('-device', type=str, default='cuda:0')
 parser.add_argument(
@@ -259,6 +300,26 @@ device = torch.device(args.device)
 # %% set up model
 
         
+
+class InputAdapter(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Conv2d(4, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(32, 16, 3, padding=1, bias=False),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(16, 3, 1, bias=False)
+        )
+
+    def forward(self, x):
+        return self.proj(x)
+    
+
 class VLSAM(nn.Module):
     def __init__(
         self,
@@ -266,6 +327,7 @@ class VLSAM(nn.Module):
         mask_decoder,
     ):
         super().__init__()
+        self.input_adapter = InputAdapter()
         self.image_encoder = image_encoder
         self.mask_decoder = mask_decoder
 
@@ -277,16 +339,22 @@ class VLSAM(nn.Module):
 
     def forward(self, image,text_embeddings,image_features):
 
+        image = self.input_adapter(image)
+
+        B = image.shape[0]
+
+        blip_img_adap = image_features.view(B, -1, 64, 64)
+        mamba_text = text_embeddings.view(B, -1, 256)
+        blip_img = image_features.view(B, -1, 256)
         
-        
-        blip_img_adap = image_features.view(1,-1,64,64)
+        # blip_img_adap = image_features.view(1,-1,64,64)
         image_embedding = self.image_encoder(image,blip_img_adap)  # (B, 256, 64, 64)
       
-        mamba_text = text_embeddings.view(1,-1,256)
-        blip_img = image_features.view(1,-1,256)
+        # mamba_text = text_embeddings.view(1,-1,256)
+        # blip_img = image_features.view(1,-1,256)
         sparse_embeddings = torch.cat((mamba_text,blip_img),dim=1)
 
-   
+
         
         dense_embeddings = self.pseudo_mask_embed(image_embedding)
         
@@ -367,9 +435,11 @@ def main():
     losses = []
     best_loss = 1e10
     best_accuracy =0
-    train_dataset = NpyDataset(args.tr_npy_path)
+    # train_dataset = NpyDataset(args.tr_npy_path)
+    train_dataset = NpyDataset("/content/drive/MyDrive/Prashant/Forestry_data/data_new/dataset_npy/train")
+    test_dataset  = NpyDataset("/content/drive/MyDrive/Prashant/Forestry_data/data_new/dataset_npy/val")
     
-    test_dataset = NpyDataset('data/....')
+    # test_dataset = NpyDataset('data/....')
     
 
     print("Number of training samples: ", len(train_dataset))
@@ -415,10 +485,22 @@ def main():
             optimizer.zero_grad()
                     
             image, gt2D = image.to(device), gt2D.to(device)
-            img_1024_ori = img_1024_ori.to(device)
+            # img_1024_ori = img_1024_ori.to(device)
+            img_rgb = img_1024_ori[:, :3]  # ensure 3-channel
+
+            img_list = []
+            for i in range(img_rgb.shape[0]):
+                img_np = img_rgb[i].permute(1,2,0).cpu().numpy()
+                img_np = (img_np * 255).astype(np.uint8)
+                img_list.append(Image.fromarray(img_np))
+
+            vlm_inputs = processor(images=img_list, return_tensors="pt").to(device)
+
+            # img_rgb = img_1024_ori.permute(0,2,3,1).cpu().numpy()  # (B,H,W,C)
+            # vlm_inputs = processor(images=img_rgb, return_tensors="pt").to(device)
             
             ### Get sentence about the input image
-            vlm_inputs = processor(img_1024_ori, return_tensors="pt").to(device)
+            # vlm_inputs = processor(img_1024_ori, return_tensors="pt").to(device)
             vlm_outputs = vlm_model.generate(**vlm_inputs,output_hidden_states=True)
             description = processor.decode(vlm_outputs[0], skip_special_tokens=True)
             
